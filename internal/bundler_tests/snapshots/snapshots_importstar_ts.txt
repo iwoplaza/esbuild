@@ -80,21 +80,17 @@ var foo = 123;
 
 // entry.ts
 var foo2 = 234;
-console.log(foo_exports, foo_exports.foo, foo2);
+console.log(foo_exports, foo, foo2);
 
 ================================================================================
 TestTSImportStarExportImportStarNoCapture
 ---------- /out.js ----------
 // foo.ts
-var foo_exports = {};
-__export(foo_exports, {
-  foo: () => foo
-});
 var foo = 123;
 
 // entry.ts
 var foo2 = 234;
-console.log(foo_exports.foo, foo_exports.foo, foo2);
+console.log(foo, foo, foo2);
 
 ================================================================================
 TestTSImportStarExportImportStarUnused
@@ -115,21 +111,17 @@ var foo = 123;
 
 // entry.ts
 var foo2 = 234;
-console.log(foo_exports, foo_exports.foo, foo2);
+console.log(foo_exports, foo, foo2);
 
 ================================================================================
 TestTSImportStarExportStarAsNoCapture
 ---------- /out.js ----------
 // foo.ts
-var foo_exports = {};
-__export(foo_exports, {
-  foo: () => foo
-});
 var foo = 123;
 
 // entry.ts
 var foo2 = 234;
-console.log(foo_exports.foo, foo_exports.foo, foo2);
+console.log(foo, foo, foo2);
 
 ================================================================================
 TestTSImportStarExportStarAsUnused

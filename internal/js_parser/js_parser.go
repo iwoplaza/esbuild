@@ -172,6 +172,11 @@ type parser struct {
 	// warning about this just like the "try { await import() }" pattern.
 	thenCatchChain thenCatchChain
 
+	// The imported symbol for the most recent property access off of an import
+	// that was recorded in "ImportSymbolPropertyUses" and that can become the
+	// start of an entry in "ImportPropertyChains"
+	importPropertyChainStart *js_ast.EImportIdentifier
+
 	// When bundling, hoisted top-level local variables declared with "var" in
 	// nested scopes are moved up to be declared in the top-level scope instead.
 	// The old "var" statements are turned into regular assignments instead. This
@@ -13152,6 +13157,12 @@ func (p *parser) maybeRewritePropertyAccess(
 			use = properties[name]
 			use.CountEstimate++
 			properties[name] = use
+
+			// This may be the start of a chain of property accesses that the linker
+			// can bind through a re-exported namespace. Mutations can't be bound.
+			if assignTarget == js_ast.AssignTargetNone && !isDeleteTarget {
+				p.importPropertyChainStart = id
+			}
 		}
 	}
 
@@ -13836,6 +13847,15 @@ func (p *parser) visitExprInOut(expr js_ast.Expr, in exprIn) (js_ast.Expr, exprO
 			propsLoc = e.TagOrNil.Loc
 			e.TagOrNil = p.visitExpr(e.TagOrNil)
 			p.warnAboutImportNamespaceCall(e.TagOrNil, exprKindJSXTag)
+
+			// Preserved JSX tags such as "<ns.a.Foo/>" are printed as-is
+			if p.options.jsx.Preserve {
+				if dot, ok := e.TagOrNil.Data.(*js_ast.EDot); ok {
+					if chains := p.currentPart.ImportPropertyChains; len(chains) > 0 && chains[len(chains)-1] == dot {
+						p.currentPart.ImportPropertyChains = chains[:len(chains)-1]
+					}
+				}
+			}
 		}
 
 		// Visit properties
@@ -14405,6 +14425,7 @@ func (p *parser) visitExprInOut(expr js_ast.Expr, in exprIn) (js_ast.Expr, exprO
 				isDeleteTarget, e.Target, e.Name, e.NameLoc, isCallTarget, isTemplateTag, false); ok {
 				return value, out
 			}
+			p.recordImportPropertyChain(e, in.assignTarget, isDeleteTarget)
 		}
 		return js_ast.Expr{Loc: expr.Loc, Data: e}, out
 
@@ -16829,6 +16850,34 @@ func (p *parser) globPatternFromExpr(expr js_ast.Expr) ([]globPart, logger.Range
 	}
 
 	return nil, logger.Range{}
+}
+
+// Property accesses off of imported symbols such as "ns.a.b" are recorded so
+// that the linker can bind them directly to the exported symbol if "ns" turns
+// out to be a namespace that was re-exported from another file. The innermost
+// property access starts the chain and each enclosing one extends it, so only
+// the outermost property access is recorded.
+func (p *parser) recordImportPropertyChain(dot *js_ast.EDot, assignTarget js_ast.AssignTarget, isDeleteTarget bool) {
+	if p.options.mode != config.ModeBundle || p.isControlFlowDead {
+		return
+	}
+	switch target := dot.Target.Data.(type) {
+	case *js_ast.EImportIdentifier:
+		// Only start a chain if "maybeRewritePropertyAccess" counted this property
+		// access in "ImportSymbolPropertyUses", since the linker relies on that
+		if p.importPropertyChainStart == target {
+			p.importPropertyChainStart = nil
+			p.currentPart.ImportPropertyChains = append(p.currentPart.ImportPropertyChains, dot)
+		}
+
+	case *js_ast.EDot:
+		// Mutations can't be bound, but their target still can be
+		if assignTarget == js_ast.AssignTargetNone && !isDeleteTarget {
+			if chains := p.currentPart.ImportPropertyChains; len(chains) > 0 && chains[len(chains)-1] == target {
+				chains[len(chains)-1] = dot
+			}
+		}
+	}
 }
 
 func (p *parser) convertSymbolUseToCall(ref ast.Ref, isSingleNonSpreadArgCall bool) {

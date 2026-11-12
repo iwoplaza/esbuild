@@ -1572,6 +1572,7 @@ func (c *linkerContext) scanImportsAndExports() {
 	// imported using an import star statement.
 	c.timer.Begin("Step 5")
 	waitGroup := sync.WaitGroup{}
+	importPropertyWarnings := make([][]logger.Msg, len(c.graph.Files))
 	for _, sourceIndex := range c.graph.ReachableFiles {
 		repr, ok := c.graph.Files[sourceIndex].InputFile.Repr.(*graph.JSRepr)
 		if !ok {
@@ -1655,14 +1656,40 @@ func (c *linkerContext) scanImportsAndExports() {
 			parts := repr.AST.Parts
 			namedImports := repr.AST.NamedImports
 			graph := c.graph
+			resolver := importPropertyResolver{c: c, repr: repr, sourceIndex: sourceIndex}
 			for partIndex := range parts {
 				part := &parts[partIndex]
+
+				// Bind property accesses off of re-exported namespaces directly to
+				// the exported symbol when possible. Each bound property access no
+				// longer counts as a use of the imported namespace.
+				var boundImportProperties map[ast.Ref]uint32
+				for _, dot := range part.ImportPropertyChains {
+					if ref, ok := resolver.bindChain(part, dot); ok {
+						if boundImportProperties == nil {
+							boundImportProperties = make(map[ast.Ref]uint32)
+						}
+						boundImportProperties[ref]++
+					}
+				}
 
 				// Now that all files have been parsed, determine which property
 				// accesses off of imported symbols are inlined enum values and
 				// which ones aren't
 				for ref, properties := range part.ImportSymbolPropertyUses {
 					use := part.SymbolUses[ref]
+
+					// Common path: this import is a namespace with bound property accesses
+					if bound := boundImportProperties[ref]; bound > 0 {
+						for _, propertyUse := range properties {
+							use.CountEstimate += propertyUse.CountEstimate
+						}
+						use.CountEstimate -= bound
+						if use.CountEstimate > 0 {
+							part.SymbolUses[ref] = use
+						}
+						continue
+					}
 
 					// Rare path: this import is a TypeScript enum
 					if importData, ok := repr.Meta.ImportsToBind[ref]; ok {
@@ -1753,10 +1780,27 @@ func (c *linkerContext) scanImportsAndExports() {
 				}
 			}
 
+			importPropertyWarnings[sourceIndex] = resolver.missingPropertyWarnings()
 			waitGroup.Done()
 		}(sourceIndex, repr)
 	}
 	waitGroup.Wait()
+
+	// Log these serially in a stable order so that the order is deterministic
+	var filesWithWarnings []uint32
+	for _, sourceIndex := range c.graph.ReachableFiles {
+		if len(importPropertyWarnings[sourceIndex]) > 0 {
+			filesWithWarnings = append(filesWithWarnings, sourceIndex)
+		}
+	}
+	sort.Slice(filesWithWarnings, func(i, j int) bool {
+		return c.graph.StableSourceIndices[filesWithWarnings[i]] < c.graph.StableSourceIndices[filesWithWarnings[j]]
+	})
+	for _, sourceIndex := range filesWithWarnings {
+		for _, msg := range importPropertyWarnings[sourceIndex] {
+			c.log.AddMsgID(logger.MsgID_Bundler_ImportIsUndefined, msg)
+		}
+	}
 	c.timer.End("Step 5")
 
 	// Step 6: Bind imports to exports. This adds non-local dependencies on the
@@ -2592,6 +2636,246 @@ func (c *linkerContext) matchImportsWithExportsForFile(sourceIndex uint32) {
 			}
 		}
 	}
+}
+
+// This binds property accesses off of imported namespace objects directly to
+// the exported symbols when the namespace object was re-exported from another
+// file. For example:
+//
+//	// entry.js
+//	import { ns } from './index.js'
+//	console.log(ns.foo)
+//
+//	// index.js
+//	export * as ns from './ns.js'
+//
+// Here "ns.foo" is bound to "foo" in "ns.js", which lets tree shaking remove
+// the namespace object for "ns.js" along with all of its other exports. This
+// also works for chains such as "ns.a.b" through multiple re-exported
+// namespaces. Property accesses directly off of "import * as ns" are already
+// handled by the parser instead.
+//
+// The parser records each chain in "ImportPropertyChains" and each chain is
+// bound independently, so the namespace object is only kept if it's used in
+// some other way (e.g. passed around as a value). The printer then substitutes
+// the bound symbol for the property accesses using "ImportPropertyBindings".
+type importPropertyResolver struct {
+	c            *linkerContext
+	repr         *graph.JSRepr
+	canBindCache map[ast.Ref]bool
+	missing      map[missingImportProperty]logger.Loc
+	sourceIndex  uint32
+}
+
+type missingImportProperty struct {
+	alias                string
+	namespaceSourceIndex uint32
+}
+
+// Only imports that resolve to the namespace object of a plain ESM file are
+// bound. An import that the linker rewrote to a CommonJS property access never
+// binds to the "exports" symbol of an ESM file, so it's excluded here.
+func (r *importPropertyResolver) canBind(ref ast.Ref) bool {
+	if result, ok := r.canBindCache[ref]; ok {
+		return result
+	}
+	start, ok := r.repr.Meta.ImportsToBind[ref]
+
+	// Symbols in wrapped CommonJS files can't reference other files directly
+	result := ok && r.repr.Meta.Wrap != graph.WrapCJS && r.c.isBindableNamespace(start)
+	if r.canBindCache == nil {
+		r.canBindCache = make(map[ast.Ref]bool)
+	}
+	r.canBindCache[ref] = result
+	return result
+}
+
+// Binds the longest prefix of the chain that can be bound to a symbol. This
+// returns the imported symbol at the root of the chain if anything was bound.
+func (r *importPropertyResolver) bindChain(part *js_ast.Part, chain *js_ast.EDot) (ast.Ref, bool) {
+	// Collect the property accesses from the innermost one to the outermost one
+	var buffer [8]*js_ast.EDot
+	dots := buffer[:0]
+	root := ast.InvalidRef
+	for dot := chain; ; {
+		dots = append(dots, dot)
+		if next, ok := dot.Target.Data.(*js_ast.EDot); ok {
+			dot = next
+			continue
+		}
+		if id, ok := dot.Target.Data.(*js_ast.EImportIdentifier); ok {
+			root = id.Ref
+		}
+		break
+	}
+	if root == ast.InvalidRef || !r.canBind(root) {
+		return ast.InvalidRef, false
+	}
+
+	current := r.repr.Meta.ImportsToBind[root]
+	var result graph.ImportData
+	depth := 0
+	for i := len(dots) - 1; i >= 0; i-- {
+		dot := dots[i]
+		next, status := r.c.resolveNamespaceProperty(current, dot.Name)
+		if status == namespacePropertyUnknown {
+			break
+		}
+		result, depth = next, len(dots)-i
+		if status == namespacePropertyMissing {
+			r.addMissingProperty(dot.Name, current.SourceIndex, dot.NameLoc)
+			break
+		}
+		current = next
+	}
+	if depth == 0 {
+		return ast.InvalidRef, false
+	}
+
+	// The part depends on the bound symbol instead of on the namespace object.
+	// Missing properties are bound to "undefined" and don't depend on a symbol.
+	// Enum values are inlined by the printer and don't depend on the enum.
+	if result.Ref != ast.InvalidRef && !r.isInlinedEnumValue(result.Ref, dots, depth) {
+		use := part.SymbolUses[result.Ref]
+		use.CountEstimate++
+		part.SymbolUses[result.Ref] = use
+
+		// Local dependencies are handled by the caller using "SymbolUses"
+		if result.SourceIndex != r.sourceIndex {
+			otherRepr := r.c.graph.Files[result.SourceIndex].InputFile.Repr.(*graph.JSRepr)
+			for _, partIndex := range otherRepr.TopLevelSymbolToParts(result.Ref) {
+				part.Dependencies = append(part.Dependencies, js_ast.Dependency{
+					SourceIndex: result.SourceIndex,
+					PartIndex:   partIndex,
+				})
+			}
+		}
+	}
+
+	// Also depend on the files that re-exported this symbol along the way
+	part.Dependencies = append(part.Dependencies, result.ReExports...)
+
+	// Tell the printer about this binding
+	if r.repr.Meta.ImportPropertyBindings == nil {
+		r.repr.Meta.ImportPropertyBindings = make(map[*js_ast.EDot]js_ast.ImportPropertyBinding)
+	}
+	r.repr.Meta.ImportPropertyBindings[chain] = js_ast.ImportPropertyBinding{Ref: result.Ref, Depth: uint32(depth)}
+	return root, true
+}
+
+// This matches the check that the printer uses to inline enum values
+func (r *importPropertyResolver) isInlinedEnumValue(ref ast.Ref, dots []*js_ast.EDot, depth int) bool {
+	if depth < len(dots) && r.c.graph.Symbols.Get(ref).Kind == ast.SymbolTSEnum {
+		if enum, ok := r.c.graph.TSEnums[ref]; ok {
+			_, ok := enum[dots[len(dots)-1-depth].Name]
+			return ok
+		}
+	}
+	return false
+}
+
+// Missing exports are only warned about once per file
+func (r *importPropertyResolver) addMissingProperty(alias string, namespaceSourceIndex uint32, loc logger.Loc) {
+	key := missingImportProperty{alias: alias, namespaceSourceIndex: namespaceSourceIndex}
+	if existing, ok := r.missing[key]; ok && existing.Start <= loc.Start {
+		return
+	}
+	if r.missing == nil {
+		r.missing = make(map[missingImportProperty]logger.Loc)
+	}
+	r.missing[key] = loc
+}
+
+// This matches the warning for "ns.foo" when "ns" comes from "import * as"
+func (r *importPropertyResolver) missingPropertyWarnings() []logger.Msg {
+	if len(r.missing) == 0 {
+		return nil
+	}
+	type warning struct {
+		missingImportProperty
+		loc logger.Loc
+	}
+	warnings := make([]warning, 0, len(r.missing))
+	for key, loc := range r.missing {
+		warnings = append(warnings, warning{missingImportProperty: key, loc: loc})
+	}
+	sort.Slice(warnings, func(i, j int) bool {
+		return warnings[i].loc.Start < warnings[j].loc.Start
+	})
+	file := &r.c.graph.Files[r.sourceIndex]
+	tracker := file.LineColumnTracker()
+	msgs := make([]logger.Msg, 0, len(warnings))
+	for _, w := range warnings {
+		namespaceFile := &r.c.graph.Files[w.namespaceSourceIndex].InputFile
+		msg := logger.Msg{
+			Kind: logger.Warning,
+			Data: tracker.MsgData(js_lexer.RangeOfIdentifier(file.InputFile.Source, w.loc), fmt.Sprintf(
+				"Import %q will always be undefined because there is no matching export in %q",
+				w.alias, namespaceFile.Source.PrettyPaths.Select(r.c.options.LogPathStyle))),
+		}
+		if helpers.IsInsideNodeModules(file.InputFile.Source.KeyPath.Text) {
+			msg.Kind = logger.Debug
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
+}
+
+// Only namespace objects of plain ESM files are bound through. CommonJS files,
+// wrapped files, and files with dynamic exports all keep the namespace object.
+func (c *linkerContext) isBindableNamespace(namespace graph.ImportData) bool {
+	repr, ok := c.graph.Files[namespace.SourceIndex].InputFile.Repr.(*graph.JSRepr)
+	return ok && namespace.Ref == repr.AST.ExportsRef && repr.AST.ExportsKind == js_ast.ExportsESM &&
+		repr.Meta.Wrap == graph.WrapNone && !repr.AST.HasLazyExport
+}
+
+type namespacePropertyStatus uint8
+
+const (
+	namespacePropertyUnknown namespacePropertyStatus = iota
+	namespacePropertyFound
+	namespacePropertyMissing
+)
+
+// Returns the symbol that "namespace[alias]" will always evaluate to, if any.
+// If the property is definitely missing, it will always evaluate to undefined.
+func (c *linkerContext) resolveNamespaceProperty(namespace graph.ImportData, alias string) (graph.ImportData, namespacePropertyStatus) {
+	if !c.isBindableNamespace(namespace) {
+		return graph.ImportData{}, namespacePropertyUnknown
+	}
+	repr := c.graph.Files[namespace.SourceIndex].InputFile.Repr.(*graph.JSRepr)
+	export, ok := repr.Meta.ResolvedExports[alias]
+	if !ok {
+		return graph.ImportData{Ref: ast.InvalidRef, ReExports: namespace.ReExports}, namespacePropertyMissing
+	}
+	if len(export.PotentiallyAmbiguousExportStarRefs) > 0 {
+		return graph.ImportData{}, namespacePropertyUnknown
+	}
+	exportRepr := c.graph.Files[export.SourceIndex].InputFile.Repr.(*graph.JSRepr)
+	if exportRepr.Meta.IsProbablyTypeScriptType[export.Ref] {
+		return graph.ImportData{}, namespacePropertyUnknown
+	}
+	result := graph.ImportData{SourceIndex: export.SourceIndex, Ref: export.Ref, ReExports: namespace.ReExports}
+
+	// Follow re-exports such as "export { foo } from './foo.js'". Note that this
+	// runs in parallel with code that mutates "NamedImports" so it can't use that.
+	if imported, ok := exportRepr.Meta.ImportsToBind[export.Ref]; ok {
+		if c.graph.Symbols.Get(export.Ref).NamespaceAlias != nil {
+			return graph.ImportData{}, namespacePropertyUnknown
+		}
+		reExports := make([]js_ast.Dependency, 0, len(namespace.ReExports)+len(imported.ReExports)+1)
+		reExports = append(reExports, namespace.ReExports...)
+		for _, partIndex := range exportRepr.TopLevelSymbolToParts(export.Ref) {
+			reExports = append(reExports, js_ast.Dependency{SourceIndex: export.SourceIndex, PartIndex: partIndex})
+		}
+		reExports = append(reExports, imported.ReExports...)
+		result = graph.ImportData{SourceIndex: imported.SourceIndex, Ref: imported.Ref, ReExports: reExports}
+	}
+
+	if symbol := c.graph.Symbols.Get(result.Ref); symbol.NamespaceAlias != nil || symbol.ImportItemStatus == ast.ImportItemMissing {
+		return graph.ImportData{}, namespacePropertyUnknown
+	}
+	return result, namespacePropertyFound
 }
 
 type matchImportKind uint8
@@ -4965,6 +5249,7 @@ func (c *linkerContext) generateCodeForFileInChunkJS(
 		ToESMRef:                     toESMRef,
 		RuntimeRequireRef:            runtimeRequireRef,
 		TSEnums:                      c.graph.TSEnums,
+		ImportPropertyBindings:       repr.Meta.ImportPropertyBindings,
 		ConstValues:                  c.graph.ConstValues,
 		LegalComments:                c.options.LegalComments,
 		UnsupportedFeatures:          c.options.UnsupportedJSFeatures,

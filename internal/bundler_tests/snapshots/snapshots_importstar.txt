@@ -533,21 +533,17 @@ var foo = 123;
 
 // entry.js
 var foo2 = 234;
-console.log(foo_exports, foo_exports.foo, foo2);
+console.log(foo_exports, foo, foo2);
 
 ================================================================================
 TestImportStarExportImportStarNoCapture
 ---------- /out.js ----------
 // foo.js
-var foo_exports = {};
-__export(foo_exports, {
-  foo: () => foo
-});
 var foo = 123;
 
 // entry.js
 var foo2 = 234;
-console.log(foo_exports.foo, foo_exports.foo, foo2);
+console.log(foo, foo, foo2);
 
 ================================================================================
 TestImportStarExportImportStarUnused
@@ -568,21 +564,17 @@ var foo = 123;
 
 // entry.js
 var foo2 = 234;
-console.log(foo_exports, foo_exports.foo, foo2);
+console.log(foo_exports, foo, foo2);
 
 ================================================================================
 TestImportStarExportStarAsNoCapture
 ---------- /out.js ----------
 // foo.js
-var foo_exports = {};
-__export(foo_exports, {
-  foo: () => foo
-});
 var foo = 123;
 
 // entry.js
 var foo2 = 234;
-console.log(foo_exports.foo, foo_exports.foo, foo2);
+console.log(foo, foo, foo2);
 
 ================================================================================
 TestImportStarExportStarAsUnused
@@ -833,20 +825,13 @@ __export(bar_exports, {
 var x = 123;
 
 // entry.js
-console.log(bar_exports, bar_exports.foo);
+console.log(bar_exports, void 0);
 
 ================================================================================
 TestReExportNamespaceImportUnusedMissingES6
 ---------- /out.js ----------
-// bar.js
-var bar_exports = {};
-__export(bar_exports, {
-  x: () => x
-});
-var x = 123;
-
 // entry.js
-console.log(bar_exports.foo);
+console.log(void 0);
 
 ================================================================================
 TestReExportOtherFileExportSelfAsNamespaceES6
@@ -1039,3 +1024,556 @@ var x = 1;
 
 // entry.js
 console.log(x);
+
+================================================================================
+TestReExportedNamespaceCommonJS
+---------- /out.js ----------
+// tgpu.cjs
+var require_tgpu = __commonJS({
+  "tgpu.cjs"(exports) {
+    exports.slot = function() {
+    };
+    exports.init = function() {
+    };
+  }
+});
+
+// index.js
+var tgpu = __toESM(require_tgpu());
+
+// entry.js
+console.log(tgpu.slot);
+
+================================================================================
+TestReExportedNamespaceDeepMutationAndIndex
+---------- /out/assign.js ----------
+// a.js
+var a_exports = {};
+__export(a_exports, {
+  x: () => x,
+  y: () => y
+});
+var x = 1;
+var y = 2;
+
+// assign.js
+console.log(x, y);
+a_exports.x = 1;
+
+---------- /out/index-access.js ----------
+// a.js
+var a_exports = {};
+__export(a_exports, {
+  x: () => x,
+  y: () => y
+});
+var x = 1;
+var y = 2;
+
+// index-access.js
+console.log(x, a_exports["y"]);
+
+---------- /out/escape.js ----------
+// a.js
+var a_exports = {};
+__export(a_exports, {
+  x: () => x,
+  y: () => y
+});
+var x = 1;
+var y = 2;
+
+// escape.js
+console.log(x, a_exports);
+
+================================================================================
+TestReExportedNamespaceDefault
+---------- /out.js ----------
+// tgpu.js
+function slot() {
+}
+
+// entry.js
+console.log(slot);
+
+================================================================================
+TestReExportedNamespaceImportStarThenExport
+---------- /out.js ----------
+// tgpu.js
+function slot() {
+}
+
+// entry.js
+console.log(slot);
+
+================================================================================
+TestReExportedNamespaceMinified
+---------- /out.js ----------
+// tgpu.js
+function t() {
+}
+var n = 123;
+
+// entry.js
+console.log(t(), n);
+
+================================================================================
+TestReExportedNamespaceMissing
+---------- /out.js ----------
+// a.js
+var x = 1;
+
+// entry.js
+console.log(x, void 0, void 0, (void 0).deep, void 0);
+(void 0)();
+
+================================================================================
+TestReExportedNamespaceMutation
+---------- /out/assign.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// assign.js
+console.log(slot);
+tgpu_exports.slot = 1;
+
+---------- /out/delete.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// delete.js
+console.log(slot);
+delete tgpu_exports.slot;
+
+---------- /out/update.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// update.js
+console.log(slot);
+tgpu_exports.slot++;
+
+---------- /out/destructure.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// destructure.js
+console.log(slot);
+[tgpu_exports.slot] = [];
+
+---------- /out/optional.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// optional.js
+console.log(slot, tgpu_exports?.init);
+
+================================================================================
+TestReExportedNamespaceNestedReExports
+---------- /out.js ----------
+// cjs.cjs
+var require_cjs = __commonJS({
+  "cjs.cjs"(exports) {
+    exports.fromCJS = 1;
+  }
+});
+
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  fromCJS: () => import_cjs.fromCJS,
+  fromClause: () => fromClause,
+  fromExternal: () => fromExternal,
+  fromStar: () => fromStar,
+  unused: () => unused,
+  unusedStar: () => unusedStar
+});
+
+// clause.js
+function fromClause() {
+}
+
+// star.js
+function fromStar() {
+}
+function unusedStar() {
+}
+
+// tgpu.js
+var import_cjs = __toESM(require_cjs());
+import { fromExternal } from "external";
+function unused() {
+}
+
+// entry.js
+console.log(fromClause, fromStar, fromExternal, tgpu_exports.fromCJS, void 0);
+
+================================================================================
+TestReExportedNamespaceNotDevirtualized
+---------- /out/index-access.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  Comp: () => Comp,
+  init: () => init,
+  init_: () => init_,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+function init_() {
+}
+var Comp = class {
+};
+
+// index-access.js
+console.log(slot, tgpu_exports["init"]);
+
+---------- /out/jsx-preserve.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  Comp: () => Comp,
+  init: () => init,
+  init_: () => init_,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+function init_() {
+}
+var Comp = class {
+};
+
+// jsx-preserve.jsx
+console.log(slot, <tgpu_exports.Comp />);
+
+---------- /out/mangled.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  Comp: () => Comp,
+  init: () => init,
+  init_: () => init_,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+function init_() {
+}
+var Comp = class {
+};
+
+// mangled.js
+console.log(slot, tgpu_exports.a);
+
+---------- /out/dead-code.js ----------
+// tgpu.js
+function slot() {
+}
+
+// dead-code.js
+console.log(slot);
+if (false) console.log(tgpu_exports.init);
+
+================================================================================
+TestReExportedNamespacePropertyAccess
+---------- /out.js ----------
+// tgpu.js
+function slot() {
+}
+var Klass = class {
+};
+
+// entry.js
+console.log(slot, slot());
+new Klass();
+
+================================================================================
+TestReExportedNamespaceRequire
+---------- /out.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+var init_tgpu = __esm({
+  "tgpu.js"() {
+  }
+});
+
+// index.js
+var index_exports = {};
+__export(index_exports, {
+  tgpu: () => tgpu_exports
+});
+var init_index = __esm({
+  "index.js"() {
+    init_tgpu();
+  }
+});
+
+// entry.js
+var { tgpu } = (init_index(), __toCommonJS(index_exports));
+console.log(tgpu.slot);
+
+================================================================================
+TestReExportedNamespaceRequiredElsewhere
+---------- /out.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+var init_tgpu = __esm({
+  "tgpu.js"() {
+  }
+});
+
+// index.js
+init_tgpu();
+
+// entry.js
+console.log(tgpu_exports.slot, (init_tgpu(), __toCommonJS(tgpu_exports)));
+
+================================================================================
+TestReExportedNamespaceReviewRegressions
+---------- /out/dotted-key.js ----------
+// ns.js
+var ns_exports = {};
+__export(ns_exports, {
+  "a.x": () => v,
+  foo: () => foo,
+  inner: () => inner_exports
+});
+
+// inner.js
+var inner_exports = {};
+__export(inner_exports, {
+  Comp: () => Comp,
+  unused: () => unused,
+  x: () => x
+});
+var x = "x";
+function Comp() {
+}
+var unused = 1;
+
+// ns.js
+var foo = 1;
+var v = "dotted";
+
+// dotted-key.js
+console.log(foo, ns_exports["a.x"], ns_exports["no.such"], inner_exports["x"]);
+
+---------- /out/jsx-nested.js ----------
+// ns.js
+var ns_exports = {};
+__export(ns_exports, {
+  "a.x": () => v,
+  foo: () => foo,
+  inner: () => inner_exports
+});
+
+// inner.js
+var inner_exports = {};
+__export(inner_exports, {
+  Comp: () => Comp,
+  unused: () => unused,
+  x: () => x
+});
+var x = "x";
+function Comp() {
+}
+var unused = 1;
+
+// ns.js
+var foo = 1;
+var v = "dotted";
+
+// jsx-nested.jsx
+console.log(foo, <ns_exports.inner.Comp />);
+
+---------- /out/dead-writes.js ----------
+// ns.js
+var foo = 1;
+
+// dead-writes.js
+console.log(foo, void 0);
+if (0) {
+  delete ns_exports.foo;
+  ns_exports.missing = 1;
+  ns_exports.inner.x++;
+}
+
+---------- /out/warning-loc.js ----------
+// warning-loc.js
+console.log((void 0).y);
+
+---------- /out/optional.js ----------
+// inner.js
+var inner_exports = {};
+__export(inner_exports, {
+  Comp: () => Comp,
+  unused: () => unused,
+  x: () => x
+});
+var x = "x";
+function Comp() {
+}
+var unused = 1;
+
+// optional.js
+console.log(inner_exports?.x, x);
+
+---------- /out/pow.js ----------
+// pow.js
+console.log((void 0) ** 2, (void 0) ** 2);
+
+================================================================================
+TestReExportedNamespaceSplitting
+---------- /out/a.js ----------
+import {
+  slot
+} from "./chunk-PYPLAEF3.js";
+
+// a.js
+console.log(slot);
+
+---------- /out/b.js ----------
+import {
+  init,
+  slot
+} from "./chunk-PYPLAEF3.js";
+
+// b.js
+console.log(slot, init);
+
+---------- /out/chunk-PYPLAEF3.js ----------
+// tgpu.js
+function slot() {
+}
+function init() {
+}
+
+export {
+  slot,
+  init
+};
+
+================================================================================
+TestReExportedNamespaceThroughImportStar
+---------- /out.js ----------
+// tgpu.js
+function slot() {
+}
+
+// entry.js
+console.log(slot, slot());
+
+================================================================================
+TestReExportedNamespaceTwoLevels
+---------- /out.js ----------
+// a.js
+function x() {
+}
+
+// mid.js
+function y() {
+}
+
+// entry.js
+console.log(x, x(), y);
+
+================================================================================
+TestReExportedNamespaceTwoLevelsInnerUsedAsValue
+---------- /out.js ----------
+// a.js
+var a_exports = {};
+__export(a_exports, {
+  unusedA: () => unusedA,
+  x: () => x
+});
+function x() {
+}
+function unusedA() {
+}
+
+// mid.js
+var y = { prop: 1 };
+
+// entry.js
+console.log(x, a_exports, void 0, y.prop);
+
+================================================================================
+TestReExportedNamespaceUsedAsValue
+---------- /out.js ----------
+// tgpu.js
+var tgpu_exports = {};
+__export(tgpu_exports, {
+  init: () => init,
+  slot: () => slot
+});
+function slot() {
+}
+function init() {
+}
+
+// entry.js
+console.log(slot, tgpu_exports);

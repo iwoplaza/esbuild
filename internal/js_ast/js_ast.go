@@ -1767,6 +1767,14 @@ type Part struct {
 	// property access is an inlined enum value or not.
 	ImportSymbolPropertyUses map[ast.Ref]map[string]SymbolUse
 
+	// This tracks chains of property accesses off of imported symbols such as
+	// "ns.a.b". If "ns" turns out to be a namespace that was re-exported from
+	// another file, the linker may bind the chain directly to the exported
+	// symbol, which lets tree shaking remove the namespace object. Each entry
+	// is the outermost property access of the chain. Each chain's innermost
+	// property access is also counted in "ImportSymbolPropertyUses".
+	ImportPropertyChains []*EDot
+
 	// The indices of the other parts in this file that are needed if this part
 	// is needed.
 	Dependencies []Dependency
@@ -1798,6 +1806,13 @@ type DeclaredSymbol struct {
 
 type SymbolUse struct {
 	CountEstimate uint32
+}
+
+// The linker binds the first "Depth" property accesses of a chain in
+// "ImportPropertyChains" to "Ref". An invalid ref means "undefined".
+type ImportPropertyBinding struct {
+	Ref   ast.Ref
+	Depth uint32
 }
 
 type SymbolCallUse struct {

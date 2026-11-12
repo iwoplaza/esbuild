@@ -86,6 +86,13 @@ type JSReprMeta struct {
 	// into two separate passes.
 	ImportsToBind map[ast.Ref]ImportData
 
+	// Chains of property accesses off of imported namespaces that were
+	// re-exported from another file (e.g. "ns.foo" where "ns" comes from
+	// "export * as ns from") are bound directly to the exported symbol when
+	// possible. This lets tree shaking remove the unused exports. The keys are
+	// entries in "ImportPropertyChains" from this file's parts.
+	ImportPropertyBindings map[*js_ast.EDot]js_ast.ImportPropertyBinding
+
 	// This includes both named exports and re-exports.
 	//
 	// Named exports come from explicit export statements in the original file,

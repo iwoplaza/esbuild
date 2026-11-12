@@ -374,6 +374,55 @@ func (p *printer) mangledPropName(ref ast.Ref) string {
 	return p.renamer.NameForSymbol(ref)
 }
 
+// Replaces the first "binding.Depth" property accesses of a chain such as
+// "ns.a.b" with the bound symbol (e.g. "b" for depth 2 or "a.b" for depth 1).
+// The enclosing property accesses are copied so they aren't substituted again.
+// Returns true if this expression is printed as "void 0"
+func (p *printer) isPrintedAsUndefined(expr js_ast.Expr) bool {
+	switch e := expr.Data.(type) {
+	case *js_ast.EUndefined:
+		return true
+
+	case *js_ast.EImportIdentifier:
+		// Missing imports are printed as "undefined"
+		return p.symbols.Get(ast.FollowSymbols(p.symbols, e.Ref)).ImportItemStatus == ast.ImportItemMissing
+
+	case *js_ast.EDot:
+		// Missing properties of re-exported namespaces are printed as "undefined"
+		if p.options.ImportPropertyBindings != nil {
+			if binding, ok := p.options.ImportPropertyBindings[e]; ok && binding.Ref == ast.InvalidRef {
+				_, ok := substituteImportPropertyBinding(expr, binding).Data.(*js_ast.EUndefined)
+				return ok
+			}
+		}
+	}
+	return false
+}
+
+func substituteImportPropertyBinding(expr js_ast.Expr, binding js_ast.ImportPropertyBinding) js_ast.Expr {
+	depth := uint32(0)
+	for current := expr; ; depth++ {
+		dot, ok := current.Data.(*js_ast.EDot)
+		if !ok {
+			break
+		}
+		current = dot.Target
+	}
+	return replaceImportPropertyChainPrefix(expr, depth-binding.Depth, binding.Ref)
+}
+
+func replaceImportPropertyChainPrefix(expr js_ast.Expr, keep uint32, ref ast.Ref) js_ast.Expr {
+	if keep == 0 {
+		if ref == ast.InvalidRef {
+			return js_ast.Expr{Loc: expr.Loc, Data: js_ast.EUndefinedShared}
+		}
+		return js_ast.Expr{Loc: expr.Loc, Data: &js_ast.EImportIdentifier{Ref: ref}}
+	}
+	clone := *expr.Data.(*js_ast.EDot)
+	clone.Target = replaceImportPropertyChainPrefix(clone.Target, keep-1, ref)
+	return js_ast.Expr{Loc: expr.Loc, Data: &clone}
+}
+
 func (p *printer) tryToGetImportedEnumValue(target js_ast.Expr, name string) (js_ast.TSEnumValue, bool) {
 	if id, ok := target.Data.(*js_ast.EImportIdentifier); ok {
 		ref := ast.FollowSymbols(p.symbols, id.Ref)
@@ -2539,6 +2588,14 @@ func (p *printer) printExpr(expr js_ast.Expr, level js_ast.L, flags printExprFla
 		}
 
 	case *js_ast.EDot:
+		// Print "ns.a.b" as "b" if the linker bound it directly to an export
+		if p.options.ImportPropertyBindings != nil {
+			if binding, ok := p.options.ImportPropertyBindings[e]; ok {
+				p.printExpr(substituteImportPropertyBinding(expr, binding), level, flags)
+				break
+			}
+		}
+
 		wrap := false
 		if e.OptionalChain == js_ast.OptionalChainNone {
 			flags |= hasNonOptionalChainParent
@@ -3436,7 +3493,7 @@ func (v *binaryExprVisitor) checkAndPrepare(p *printer) bool {
 			v.leftLevel = js_ast.LCall
 		} else if _, ok := e.Left.Data.(*js_ast.EAwait); ok {
 			v.leftLevel = js_ast.LCall
-		} else if _, ok := e.Left.Data.(*js_ast.EUndefined); ok {
+		} else if p.isPrintedAsUndefined(e.Left) {
 			// Undefined is printed as "void 0"
 			v.leftLevel = js_ast.LCall
 		} else if _, ok := e.Left.Data.(*js_ast.ENumber); ok {
@@ -4913,6 +4970,10 @@ type Options struct {
 
 	// Cross-module inlining of TypeScript enums is actually done during printing
 	TSEnums map[ast.Ref]map[string]js_ast.TSEnumValue
+
+	// Property access chains off of re-exported namespaces that the linker
+	// bound directly to the exported symbol (e.g. "ns.a.b" => "b")
+	ImportPropertyBindings map[*js_ast.EDot]js_ast.ImportPropertyBinding
 
 	// Cross-module inlining of detected inlinable constants is also done during printing
 	ConstValues map[ast.Ref]js_ast.ConstValue

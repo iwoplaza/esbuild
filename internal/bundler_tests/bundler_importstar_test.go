@@ -1,6 +1,7 @@
 package bundler_tests
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/evanw/esbuild/internal/config"
@@ -1189,6 +1190,8 @@ func TestReExportNamespaceImportMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
+		expectedCompileLog: `entry.js: WARNING: Import "foo" will always be undefined because there is no matching export in "bar.js"
+`,
 	})
 }
 
@@ -1211,6 +1214,8 @@ func TestReExportNamespaceImportUnusedMissingES6(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
+		expectedCompileLog: `entry.js: WARNING: Import "foo" will always be undefined because there is no matching export in "bar.js"
+`,
 	})
 }
 
@@ -1837,5 +1842,586 @@ func TestReExportStarEntryPointAndInnerFile(t *testing.T) {
 				},
 			},
 		},
+	})
+}
+
+// https://github.com/evanw/esbuild/issues/1420
+func TestReExportedNamespacePropertyAccess(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu.slot())
+				new tgpu.Klass
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				import { heavy } from './heavy.js'
+				export function slot() {}
+				export class Klass {}
+				export function init() { return heavy() }
+			`,
+			"/heavy.js": `
+				export function heavy() { return 'heavy' }
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceImportStarThenExport(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+			`,
+			"/index.js": `
+				import * as tgpu from './tgpu.js'
+				export { tgpu }
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceUsedAsValue(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceMutation(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/assign.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+				tgpu.slot = 1
+			`,
+			"/delete.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+				delete tgpu.slot
+			`,
+			"/update.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+				tgpu.slot++
+			`,
+			"/destructure.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot);
+				[tgpu.slot] = []
+			`,
+			"/optional.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu?.init)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/assign.js", "/delete.js", "/update.js", "/destructure.js", "/optional.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			OutputFormat: config.FormatESModule,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestReExportedNamespaceDefault(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import tgpu from './index.js'
+				console.log(tgpu.slot)
+			`,
+			"/index.js": `
+				export * as default from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceTwoLevels(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a.x(), b.y)
+			`,
+			"/index.js": `
+				export * as b from './mid.js'
+			`,
+			"/mid.js": `
+				export * as a from './a.js'
+				export function y() {}
+				export function unusedMid() {}
+			`,
+			"/a.js": `
+				export function x() {}
+				export function unusedA() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceTwoLevelsInnerUsedAsValue(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a, b.a.missing, b.y.prop)
+			`,
+			"/index.js": `
+				export * as b from './mid.js'
+			`,
+			"/mid.js": `
+				export * as a from './a.js'
+				export const y = { prop: 1 }
+				export function unusedMid() {}
+			`,
+			"/a.js": `
+				export function x() {}
+				export function unusedA() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+		expectedCompileLog: `entry.js: WARNING: Import "missing" will always be undefined because there is no matching export in "a.js"
+`,
+	})
+}
+
+func TestReExportedNamespaceCommonJS(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.cjs'
+			`,
+			"/tgpu.cjs": `
+				exports.slot = function() {}
+				exports.init = function() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceRequire(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				const { tgpu } = require('./index.js')
+				console.log(tgpu.slot)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceRequiredElsewhere(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, require('./tgpu.js'))
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceSplitting(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/a.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+			`,
+			"/b.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu.init)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+				export function unused() {}
+			`,
+		},
+		entryPaths: []string{"/a.js", "/b.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			CodeSplitting: true,
+			AbsOutputDir:  "/out",
+		},
+	})
+}
+
+func TestReExportedNamespaceNotDevirtualized(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/index-access.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu['init'])
+			`,
+			"/jsx-preserve.jsx": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, <tgpu.Comp />)
+			`,
+			"/mangled.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot, tgpu.init_)
+			`,
+			"/dead-code.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot)
+				if (false) console.log(tgpu.init)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+				export function init_() {}
+				export class Comp {}
+			`,
+		},
+		entryPaths: []string{"/index-access.js", "/jsx-preserve.jsx", "/mangled.js", "/dead-code.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			OutputFormat: config.FormatESModule,
+			AbsOutputDir: "/out",
+			MangleProps:  regexp.MustCompile("_$"),
+			JSX: config.JSXOptions{
+				Parse:    true,
+				Preserve: true,
+			},
+		},
+	})
+}
+
+func TestReExportedNamespaceNestedReExports(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.fromClause, tgpu.fromStar, tgpu.fromExternal, tgpu.fromCJS, tgpu.missing)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export { fromClause } from './clause.js'
+				export * from './star.js'
+				export { fromExternal } from 'external'
+				export { fromCJS } from './cjs.cjs'
+				export function unused() {}
+			`,
+			"/clause.js": `
+				export function fromClause() {}
+				export function unusedClause() {}
+			`,
+			"/star.js": `
+				export function fromStar() {}
+				export function unusedStar() {}
+			`,
+			"/cjs.cjs": `
+				exports.fromCJS = 1
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{
+					Exact: map[string]bool{"external": true},
+				},
+			},
+		},
+		expectedCompileLog: `entry.js: WARNING: Import "missing" will always be undefined because there is no matching export in "tgpu.js"
+`,
+	})
+}
+
+func TestReExportedNamespaceMinified(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { tgpu } from './index.js'
+				console.log(tgpu.slot(), tgpu.CONST)
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export const CONST = 123
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:              config.ModeBundle,
+			OutputFormat:      config.FormatESModule,
+			AbsOutputFile:     "/out.js",
+			MinifySyntax:      true,
+			MinifyIdentifiers: true,
+		},
+	})
+}
+
+func TestReExportedNamespaceThroughImportStar(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import * as lib from './index.js'
+				console.log(lib.tgpu.slot, lib.tgpu.slot())
+			`,
+			"/index.js": `
+				export * as tgpu from './tgpu.js'
+			`,
+			"/tgpu.js": `
+				export function slot() {}
+				export function init() {}
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestReExportedNamespaceMissing(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a.missing, b.missing, b.a.missing.deep, b.a.missing)
+				b.a.missing()
+			`,
+			"/index.js": `
+				export * as b from './b.js'
+			`,
+			"/b.js": `
+				export * as a from './a.js'
+				export const unusedB = 1
+			`,
+			"/a.js": `
+				export const x = 1
+				export const unusedA = 2
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+		expectedCompileLog: `entry.js: WARNING: Import "missing" will always be undefined because there is no matching export in "a.js"
+entry.js: WARNING: Import "missing" will always be undefined because there is no matching export in "b.js"
+`,
+	})
+}
+
+func TestReExportedNamespaceDeepMutationAndIndex(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/assign.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a.y)
+				b.a.x = 1
+			`,
+			"/index-access.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a['y'])
+			`,
+			"/escape.js": `
+				import { b } from './index.js'
+				console.log(b.a.x, b.a)
+			`,
+			"/index.js": `
+				export * as b from './b.js'
+			`,
+			"/b.js": `
+				export * as a from './a.js'
+				export const unusedB = 1
+			`,
+			"/a.js": `
+				export const x = 1
+				export const y = 2
+			`,
+		},
+		entryPaths: []string{"/assign.js", "/index-access.js", "/escape.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			OutputFormat: config.FormatESModule,
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestReExportedNamespaceReviewRegressions(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/dotted-key.js": `
+				import { ns } from './index.js'
+				console.log(ns.foo, ns['a.x'], ns['no.such'], ns.inner['x'])
+			`,
+			"/jsx-nested.jsx": `
+				import { ns } from './index.js'
+				console.log(ns.foo, <ns.inner.Comp />)
+			`,
+			"/dead-writes.js": `
+				import { ns } from './index.js'
+				console.log(ns.foo, ns.missing)
+				if (0) { delete ns.foo; ns.missing = 1; ns.inner.x++ }
+			`,
+			"/warning-loc.js": `
+				import { ns } from './index.js'
+				console.log(ns.inner.nope.y)
+			`,
+			"/optional.js": `
+				import { ns } from './index.js'
+				console.log(ns.inner?.x, ns.inner.x)
+			`,
+			"/pow.js": `
+				import { ns } from './index.js'
+				import * as star from './ns.js'
+				console.log(ns.nope ** 2, star.nope ** 2)
+			`,
+			"/index.js": `
+				export * as ns from './ns.js'
+			`,
+			"/ns.js": `
+				export let foo = 1
+				let v = 'dotted'
+				export { v as 'a.x' }
+				export * as inner from './inner.js'
+			`,
+			"/inner.js": `
+				export let x = 'x'
+				export function Comp() {}
+				export const unused = 1
+			`,
+		},
+		entryPaths: []string{"/dotted-key.js", "/jsx-nested.jsx", "/dead-writes.js", "/warning-loc.js", "/optional.js", "/pow.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			OutputFormat: config.FormatESModule,
+			AbsOutputDir: "/out",
+			JSX: config.JSXOptions{
+				Parse:    true,
+				Preserve: true,
+			},
+		},
+		expectedCompileLog: `dead-writes.js: WARNING: Import "missing" will always be undefined because there is no matching export in "ns.js"
+pow.js: WARNING: Import "nope" will always be undefined because there is no matching export in "ns.js"
+pow.js: WARNING: Import "nope" will always be undefined because there is no matching export in "ns.js"
+warning-loc.js: WARNING: Import "nope" will always be undefined because there is no matching export in "inner.js"
+`,
 	})
 }

@@ -3090,3 +3090,49 @@ func TestTreeShakingImportAliasIssue4507(t *testing.T) {
 		},
 	})
 }
+
+func TestTSReExportedNamespaceEnum(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { ns } from './index'
+				import { Direct } from './enums'
+				console.log(ns.E.A, ns.E.B.toString(), ns.f, Direct.X.length)
+			`,
+			"/index.ts": `
+				export * as ns from './enums'
+			`,
+			"/enums.ts": `
+				export enum E { A, B }
+				export enum Direct { X = 'x' }
+				export function f() {}
+				export function unused() {}
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			OutputFormat:  config.FormatESModule,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestTSEnumDottedStringKey(t *testing.T) {
+	ts_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				import { E } from './enums'
+				console.log(E['A.missing'], E.A)
+			`,
+			"/enums.ts": `
+				export enum E { A = 1 }
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
